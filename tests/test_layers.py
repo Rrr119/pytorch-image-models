@@ -15,7 +15,9 @@ from timm.layers import (
     PatchEmbed,
     PatchEmbedInterpolator,
     RotAttentionPool2d,
+    WindowAttention2d,
     convert_splitbn_model,
+    create_attn,
     create_act_layer,
     get_act_fn,
     get_act_layer,
@@ -23,6 +25,8 @@ from timm.layers import (
     resample_abs_pos_embed,
     resample_patch_embed,
     set_layer_config,
+    window_partition,
+    window_reverse,
 )
 
 import importlib
@@ -463,6 +467,85 @@ def test_attn2d(bias, expand_first, head_first, attn_mask):
     o2 = attn(x, mask)
     
     assert torch.allclose(o1, o2, atol=1e-5), f"{torch.abs(o1 - o2).max()}"
+
+
+@pytest.mark.parametrize('window_size', [7, (4, 8)])
+@pytest.mark.parametrize('attn_mask', [False, True])
+def test_window_attention2d(window_size, attn_mask):
+    torch.manual_seed(0)
+    if isinstance(window_size, tuple):
+        H, W = 8, 16
+    else:
+        H, W = 14, 21
+    win_h, win_w = (window_size, window_size) if isinstance(window_size, int) else window_size
+    x = torch.randn(2, 64, H, W)
+    attn = WindowAttention2d(64, num_heads=4, window_size=window_size)
+
+    if attn_mask:
+        num_windows = (H // win_h) * (W // win_w)
+        mask = torch.zeros(num_windows, win_h * win_w, win_h * win_w)
+        mask[:, 0, 1:] = float('-inf')
+    else:
+        mask = None
+
+    o1 = attn(x, mask)
+    assert o1.shape == x.shape
+
+    # fused (SDPA) and manual softmax paths must agree, with and without a mask
+    attn.fused_attn = False
+    o2 = attn(x, mask)
+    assert torch.allclose(o1, o2, atol=1e-5), f"{torch.abs(o1 - o2).max()}"
+
+
+def test_window_partition_reverse_roundtrip():
+    x = torch.randn(2, 16, 14, 21)
+    window_size = (7, 7)
+    windows = window_partition(x, window_size)
+    num_windows = (14 // 7) * (21 // 7)
+    assert windows.shape == (2 * num_windows, 16, 7, 7)
+    x_reversed = window_reverse(windows, window_size, 14, 21)
+    assert torch.equal(x, x_reversed)
+
+
+def test_window_attention2d_is_local():
+    # perturbing one window must not change the output of any other window
+    torch.manual_seed(0)
+    attn = WindowAttention2d(32, num_heads=4, window_size=4).eval()
+    x = torch.randn(1, 32, 8, 8)
+    x_perturbed = x.clone()
+    x_perturbed[:, :, :4, :4] = 0.
+    with torch.no_grad():
+        out = attn(x)
+        out_perturbed = attn(x_perturbed)
+    assert torch.equal(out[:, :, 4:, :], out_perturbed[:, :, 4:, :])
+    assert not torch.equal(out[:, :, :4, :4], out_perturbed[:, :, :4, :4])
+
+
+def test_window_attention2d_set_window_size():
+    attn = WindowAttention2d(64, num_heads=4, window_size=7)
+    old_table_shape = attn.rel_pos.relative_position_bias_table.shape
+    attn.set_window_size((5, 5))
+    assert attn.window_size == (5, 5)
+    assert attn.window_area == 25
+    assert attn.rel_pos.relative_position_bias_table.shape != old_table_shape
+    # module runs at the new window size and buffers are consistent
+    out = attn(torch.randn(2, 64, 10, 15))
+    assert out.shape == (2, 64, 10, 15)
+
+
+def test_window_attention2d_gradients():
+    attn = WindowAttention2d(64, num_heads=4, window_size=7)
+    x = torch.randn(2, 64, 14, 14)
+    attn(x).sum().backward()
+    assert attn.rel_pos.relative_position_bias_table.grad is not None
+    assert attn.qkv.weight.grad is not None
+    assert attn.proj.weight.grad is not None
+
+
+def test_window_attention2d_factory():
+    attn = create_attn('window', 64, num_heads=4, window_size=7)
+    assert isinstance(attn, WindowAttention2d)
+    assert attn(torch.randn(2, 64, 14, 14)).shape == (2, 64, 14, 14)
 
 
 @pytest.mark.parametrize('pool_type', ['', 'avg'])

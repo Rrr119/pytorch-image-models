@@ -19,6 +19,7 @@ from .attention import Attention, AttentionRope, maybe_add_mask, resolve_self_at
 from .attention2d import MultiQueryAttention2d, Attention2d, MultiQueryAttentionV2
 from .attention_pool import AttentionPoolLatent, AttentionPoolPrr
 from .attention_pool2d import AttentionPool2d, RotAttentionPool2d
+from .window_attn import WindowAttention2d, window_partition, window_reverse
 from .blur_pool import BlurPool2d, create_aa
 from .classifier import create_classifier, ClassifierHead, NormMlpClassifierHead, ClNormMlpClassifierHead
 from .cond_conv2d import CondConv2d, get_condconv_initializer

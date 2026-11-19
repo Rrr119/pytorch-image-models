@@ -17,6 +17,7 @@ from .non_local_attn import NonLocalAttn, BatNonLocalAttn
 from .selective_kernel import SelectiveKernel
 from .split_attn import SplitAttn
 from .squeeze_excite import SEModule, EffectiveSEModule
+from .window_attn import WindowAttention2d
 
 
 def get_attn(attn_type):
@@ -74,6 +75,8 @@ def get_attn(attn_type):
                 return BottleneckAttn
             elif attn_type == 'halo':
                 return HaloAttn
+            elif attn_type == 'window':
+                return WindowAttention2d
             elif attn_type == 'nl':
                 module_cls = NonLocalAttn
             elif attn_type == 'bat':
